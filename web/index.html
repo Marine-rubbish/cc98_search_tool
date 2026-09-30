@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="cc98-local-search" content="1"><title>CC98 · 帖子搜索</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><a class="brand" href="/">98<span>帖子搜索</span></a><div id="connection" class="connection">检查连接中</div></header>
+<main>
+  <section class="intro"><div class="eyebrow">CC98 / 全文扫描</div><h1>找回藏在回复里的信息。</h1><p>选好版面，搜索标题和每一层回复。结果边查边显示。</p></section>
+  <details id="setup" class="setup" open>
+    <summary>自动连接 Chrome <span id="setupHint">首次使用只需加载一次扩展</span></summary>
+    <ol><li>在 Chrome 打开 <code>chrome://extensions</code>，开启「开发者模式」。</li><li>点击「加载已解压的扩展程序」，选择项目中的 <code>extension</code> 文件夹。已安装旧版时，点击扩展卡片上的重新加载按钮。</li><li>在同一 Chrome 中登录 CC98（支持浙大 WebVPN），保持本搜索页打开，扩展会自动连接。</li></ol>
+    <p class="muted">以后运行平台启动脚本或 npm run open 即可打开搜索。若仍未连接，请点击扩展图标查看登录或刷新提示。</p>
+  </details>
+  <div id="notice" role="alert" hidden></div>
+  <div class="workspace">
+    <aside class="panel">
+      <form id="searchForm">
+        <label for="keyword" class="label">想找什么？</label><input id="keyword" class="keyword" placeholder="例如：面试、转正、租房" maxlength="200" required>
+        <div class="label section-label">扫描范围 <button type="button" id="refreshBoards" class="text-button">刷新版面</button></div>
+        <div class="presets"><button type="button" id="employment" class="chip">就业</button><button type="button" id="allBoards" class="chip">全部可选版面</button><button type="button" id="clearBoards" class="chip">清空</button></div>
+        <input id="boardFilter" placeholder="筛选版面名称或编号" aria-label="筛选版面">
+        <div id="boards" class="boards"><p class="muted">连接 Chrome 后加载版面目录。</p></div>
+        <p id="scopeHint" class="muted">就业组合：求职广场、实习兼职。</p>
+        <div class="settings"><label for="concurrency">并发数<input id="concurrency" type="number" value="20" min="1" max="20" required></label><label for="rate">每秒请求数<input id="rate" type="number" value="10" min="1" max="50" required></label></div>
+        <label class="check"><input id="caseSensitive" type="checkbox">区分英文大小写</label>
+        <button id="start" class="primary" type="submit" disabled>开始搜索 <span>↗</span></button>
+        <p class="muted small">扫描所选版面的全部历史主题。已命中的主题会停止继续读取。</p>
+      </form>
+    </aside>
+    <section class="results-panel">
+      <div class="results-heading"><h2>搜索结果</h2><select id="jobSelect" aria-label="任务历史"><option value="">暂无任务</option></select></div>
+      <div id="empty" class="empty"><div class="empty-mark">↗</div><h3>从一个关键词开始</h3><p>即使只在靠后的回复中出现，也会返回所属主题。</p></div>
+      <div id="jobPanel" hidden>
+        <div class="job-header"><span id="jobState" class="badge"></span><div class="actions"><button id="pause" class="secondary">暂停</button><button id="cancel" class="secondary">取消</button><button id="resume" class="secondary">继续扫描</button><button id="export" class="secondary">导出 JSON</button></div></div>
+        <p id="jobQuery"></p><p id="jobScope" class="muted"></p>
+        <div class="metrics"><div><strong id="matched">0</strong><span>命中主题</span></div><div><strong id="processed">0</strong><span>已处理</span></div><div><strong id="pending">0</strong><span>待处理 / 读取中</span></div><div><strong id="failed">0</strong><span>读取问题</span></div></div>
+        <p id="progress" class="muted"></p><p id="coverage" class="coverage"></p>
+        <details id="failurePanel" hidden><summary>查看读取问题</summary><ul id="failures"></ul></details>
+        <div id="results"></div><p id="noResults" class="muted"></p><button id="more" class="secondary" hidden>加载更多</button>
+      </div>
+    </section>
+  </div>
+  <footer>内容范围以当前账号可读内容为准。图片、附件中的文字不参与搜索。</footer>
+</main><script type="module" src="/app.js"></script>
+</body></html>

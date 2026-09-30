@@ -1,0 +1,7 @@
+node_modules/
+.cc98/
+dist/
+*.sqlite*
+.DS_Store
+test-artifacts/
+.internal/

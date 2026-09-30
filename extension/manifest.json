@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "CC98 本地搜索连接器",
+  "version": "0.2.3",
+  "description": "让本机搜索工具通过已登录的 CC98 标签页读取版面和帖子。",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting", "storage", "webRequest", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*", "https://cc98.org/*", "https://*.cc98.org/*", "https://webvpn.zju.edu.cn/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "连接 CC98 搜索" }
+}

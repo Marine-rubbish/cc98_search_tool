@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>连接 CC98 搜索</title><style>
+body{font:14px system-ui;width:330px;padding:18px;color:#18332c}h1{font-size:20px}p{line-height:1.7;color:#586b65}button{padding:10px 15px;border:0;border-radius:6px;cursor:pointer;background:#14684e;color:white;margin:10px 6px 0 0}button:disabled{opacity:.5;cursor:wait}.secondary{background:#edf3ef;color:#18332c}#status{white-space:pre-wrap;background:#edf3ef;padding:12px;border-radius:8px}.hint{font-size:12px}[hidden]{display:none!important}
+</style></head><body>
+<h1>CC98 帖子搜索</h1>
+<p>打开本地搜索页和已登录的 CC98，扩展会自动连接。</p>
+<p id="status" role="status">正在检查连接…</p>
+<button id="open" type="button">打开搜索</button><button id="connect" type="button" class="secondary">重新连接</button>
+<button id="refresh" type="button" hidden>刷新 CC98 并重试</button><button id="login" type="button" hidden>登录 CC98</button>
+<button id="forum" type="button" class="secondary">打开 CC98</button><button id="disconnect" type="button" class="secondary" hidden>断开</button>
+<p class="hint">搜索页打不开时，请运行平台启动脚本或 npm run open。使用 WebVPN 时，请先在 WebVPN 中打开 CC98。</p>
+<script type="module" src="popup.js"></script>
+</body></html>
