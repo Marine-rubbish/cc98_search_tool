@@ -2,6 +2,7 @@ import { Store } from './store.js';
 import { Site } from './site.js';
 import { RequestPool, wait } from './pool.js';
 import { matchText } from './matcher.js';
+import { sameTopic, TopicVerifier } from './topic-verifier.js';
 import { errorInfo, ScanError } from './types.js';
 import type { Board, Job, Match, SearchOptions, Topic, Transport } from './types.js';
 
@@ -219,6 +220,25 @@ export class Scanner {
       persist();
     };
 
+    /* 正文与延迟核对共用错误处理，中断项始终可恢复。 */
+    const topicFailed = (topic: Topic, error: unknown) => {
+      const info = errorInfo(error);
+      this.store.finishTopic(job, topic, signal.aborted || info.pause ? 'pending' : 'error', undefined, info.message);
+      if (info.pause) fatal(error);
+      persist();
+    };
+    const verifier = new TopicVerifier(site, signal, job.options.concurrency,
+      (topic, match) => {
+        this.store.finishTopic(job, topic, match ? 'matched' : 'no_match', match);
+        persist();
+      },
+      async (topic, match) => {
+        await this.verifyTopic(job, topic, site, signal, true, match);
+        persist();
+      },
+      topicFailed);
+    let activeBodies = 0;
+
     /* 两遍读取各版面目录，并将发现的主题持续写入待处理队列。 */
     const discover = async () => {
       if (topicIds) return;
@@ -260,7 +280,7 @@ export class Scanner {
                 for (const topic of topics) {
                   if (!seen.has(topic.id)) fresh++;
                   seen.add(topic.id);
-                  this.store.add(job, topic);
+                  this.store.add(job, { ...topic, directoryPage: { boardId: board.id, from, size } });
                 }
                 if (!fresh) throw new ScanError('PAGINATION', `主题目录 ${from} 重复，未能继续翻页`);
                 if (topics.length < size) {
@@ -308,19 +328,22 @@ export class Scanner {
     const worker = async () => {
       try {
         while (!signal.aborted) {
+          /* 暂停领取以限制未核对积压，当前在读正文仍可进入下一批。 */
+          if (verifier.full()) { await verifier.waitForRoom(); continue; }
           const candidate = this.store.claim(job, topicIds);
           if (!candidate) {
-            if (!discovering) break;
+            if (!discovering && activeBodies === 0) {
+              if (!verifier.pending()) break;
+              await verifier.flush();
+              continue;
+            }
             await wait(30, signal);
             continue;
           }
-          try { await this.scanTopic(job, candidate, site, signal); }
-          catch (error) {
-            const info = errorInfo(error);
-            /* 整轮中断不应污染主题错误统计，当前主题放回 pending 等待恢复。 */
-            this.store.finishTopic(job, candidate, signal.aborted || info.pause ? 'pending' : 'error', undefined, info.message);
-            if (info.pause) throw error;
-          }
+          activeBodies++;
+          try { await this.scanTopic(job, candidate, site, signal, verifier); }
+          catch (error) { topicFailed(candidate, error); }
+          finally { activeBodies--; }
           persist();
         }
       } catch (error) { fatal(error); }
@@ -328,6 +351,8 @@ export class Scanner {
 
     /* 目录发现与工作协程同时运行，所有请求共用同一个并发和限速池。 */
     await Promise.all([discover(), ...Array.from({ length: job.options.concurrency }, worker)]);
+    await verifier.settled().catch(fatal);
+    verifier.release(topic => this.store.finishTopic(job, topic, 'pending'));
     job.requests = pool.requests;
     if (job.status === 'running') {
       const counts = this.store.counts(job);
@@ -339,9 +364,21 @@ export class Scanner {
     persist();
   }
 
-  /* 扫描一个主题的标题和全部楼层；首次命中立即保存，不再读取后续楼层。 */
-  private async scanTopic(job: Job, candidate: Topic, site: Site, signal: AbortSignal) {
-    const topic = await site.topic(candidate.id);
+  /* 字段齐全的短帖复用目录基线，省去首次详情；其他主题仍先读取最新详情。 */
+  private async scanTopic(job: Job, candidate: Topic, site: Site, signal: AbortSignal, verifier: TopicVerifier) {
+    const fromDirectory = Number.isSafeInteger(candidate.replyCount) && candidate.replyCount >= 0 &&
+      candidate.replyCount < 10 && job.boards.some(board => board.id === candidate.boardId) &&
+      Number.isFinite(Date.parse(candidate.lastPostTime ?? '')) &&
+      matchText(candidate.title, job.options.keyword, job.options.caseSensitive, 'plain') === undefined;
+    const topic = fromDirectory ? candidate : await site.topic(candidate.id);
+    await this.scanTopicWithMetadata(job, topic, site, signal, fromDirectory, verifier);
+  }
+
+  /* 使用已有元数据扫描主题；目录基线下的结论必须先经过批量或详情核对。 */
+  private async scanTopicWithMetadata(
+    job: Job, topic: Topic, site: Site, signal: AbortSignal, fromDirectory = false, verifier?: TopicVerifier,
+  ): Promise<void> {
+    signal.throwIfAborted();
     const board = job.boards.find(b => b.id === topic.boardId);
     /* 置顶主题可能来自其他版面，以主题详情中的实际 boardId 为准。 */
     if (!board) { this.store.finishTopic(job, topic, 'out_of_scope'); return; }
@@ -358,10 +395,12 @@ export class Scanner {
     if (title !== undefined) { this.store.finishTopic(job, topic, 'matched', makeMatch(title)); return; }
     const seen = new Map<number, number>();
     let lastFloor = 0;
+    let pendingMatch: Match | undefined;
     const expected = topic.replyCount + 1;
-    for (let from = 0;;) {
+    pages: for (let from = 0;;) {
       signal.throwIfAborted();
       const posts = await site.posts(topic.id, from);
+      signal.throwIfAborted();
       if (!posts.length) {
         if (from === 0) throw new ScanError('PAGINATION', `主题 ${topic.id} 未返回可读楼层`);
         break;
@@ -386,7 +425,12 @@ export class Scanner {
         /* contentType=1 为 Markdown；缺失或 0 按 CC98 的 UBB 正文处理。 */
         const snippet = matchText(post.content, job.options.keyword, job.options.caseSensitive, post.contentType === 1 ? 'markdown' : 'ubb');
         if (snippet !== undefined) {
-          this.store.finishTopic(job, topic, 'matched', makeMatch(snippet, post.floor, post.id));
+          const match = makeMatch(snippet, post.floor, post.id);
+          if (fromDirectory) {
+            pendingMatch = match;
+            break pages;
+          }
+          this.store.finishTopic(job, topic, 'matched', match);
           return;
         }
       }
@@ -394,10 +438,22 @@ export class Scanner {
       if (from >= expected) break;
     }
 
-    /* 得出无匹配前重读主题元数据；扫描期间变化的主题留到恢复时复查。 */
+    signal.throwIfAborted();
+    if (fromDirectory && verifier?.add(topic, pendingMatch)) return;
+    await this.verifyTopic(job, topic, site, signal, fromDirectory, pendingMatch);
+  }
+
+  /* 单条、来源不明或目录异常时逐帖核对；有变化只回退重扫一次。 */
+  private async verifyTopic(
+    job: Job, topic: Topic, site: Site, signal: AbortSignal, fromDirectory: boolean, pendingMatch?: Match,
+  ) {
     const after = await site.topic(topic.id);
-    if (after.replyCount !== topic.replyCount || after.boardId !== topic.boardId || after.title !== topic.title ||
-        after.lastPostTime !== topic.lastPostTime) throw new ScanError('CHANGED', '主题在读取期间发生变化，需要恢复复查');
-    this.store.finishTopic(job, topic, 'no_match');
+    signal.throwIfAborted();
+    if (!sameTopic(topic, after)) {
+      /* 目录可能已经过期，复用最新详情重扫一次；回退不再走目录优化路径。 */
+      if (fromDirectory) return this.scanTopicWithMetadata(job, after, site, signal);
+      throw new ScanError('CHANGED', '主题在读取期间发生变化，需要恢复复查');
+    }
+    this.store.finishTopic(job, after, pendingMatch ? 'matched' : 'no_match', pendingMatch);
   }
 }

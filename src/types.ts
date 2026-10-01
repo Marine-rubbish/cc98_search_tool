@@ -36,8 +36,13 @@ export interface Board {
   canEntry?: boolean;
   topicCount?: number;
 }
+/* 普通目录的本地来源标记；只由扫描器写入，不采信接口中的同名字段。 */
+export interface DirectoryPage { boardId: number; from: number; size: number }
 /* 主题摘要；replyCount 不含主楼，boardId 在读取主题详情后必须有效。 */
-export interface Topic { id: number; title: string; boardId?: number; replyCount: number; lastPostTime?: string }
+export interface Topic {
+  id: number; title: string; boardId?: number; replyCount: number; lastPostTime?: string;
+  directoryPage?: DirectoryPage;
+}
 /* 楼层号从 1 开始；contentType 为 0 时按 UBB 解析，为 1 时按 Markdown 解析。 */
 export interface Post { id: number; floor: number; content: string; isDeleted: boolean; contentType?: number }
 /* finished_unverified 表示已发现主题均有结论；partial 表示仍有读取问题或未处理项。 */

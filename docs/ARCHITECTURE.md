@@ -80,6 +80,7 @@ flowchart LR
 |   |-- cli.ts                   # JSON CLI 与前台服务入口
 |   |-- server.ts                # HTTP API、静态资源、鉴权和组件装配
 |   |-- scanner.ts               # 目录发现、主题扫描和任务恢复
+|   |-- topic-verifier.ts        # 短帖批量目录核对和逐帖回退
 |   |-- pool.ts                  # 并发限制、请求频率、重试和退避
 |   |-- site.ts                  # CC98 资源读取语义与响应校验
 |   |-- matcher.ts               # UBB、Markdown 和纯文本匹配
@@ -105,6 +106,8 @@ flowchart LR
 `-- test/
     |-- fixture.ts               # 固定论坛数据与模拟传输
     |-- scanner.test.ts          # 扫描、分页、恢复和限频测试
+    |-- short-topic.test.ts      # 短帖详情核对、变化回退和边界测试
+    |-- batch-topic.test.ts      # 批量请求数、核对时序和中断恢复测试
     |-- extension.test.ts        # 页面协议与登录状态测试
     |-- auto-connect.test.ts     # 扩展自动绑定和令牌恢复测试
     |-- integration.test.ts      # WebSocket、HTTP、CLI 和持久化集成测试
@@ -137,6 +140,7 @@ sequenceDiagram
     participant Client as 页面 / CLI
     participant Server as HTTP API
     participant Scanner
+    participant Verifier as TopicVerifier
     participant Store as SQLite
     participant Pool as RequestPool
     participant Bridge
@@ -159,8 +163,13 @@ sequenceDiagram
         Scanner->>Store: 去重并写入 pending
     and 主题处理
         Scanner->>Store: claim pending
-        Scanner->>Pool: 读取主题详情和楼层
+        Scanner->>Pool: 读取所需详情和楼层
         Scanner->>Scanner: 提取可见文本并匹配
+        opt 可批量核对的短帖
+            Scanner->>Verifier: 暂存基线与结论，保持 working
+            Verifier->>Pool: 正文结束后按来源页读取新目录
+            Verifier->>Scanner: 确认结论，或逐帖读取详情并按需重扫
+        end
         Scanner->>Store: 写入 matched / no_match / error
     end
 
@@ -171,7 +180,7 @@ sequenceDiagram
     end
 ```
 
-目录发现和主题处理共享同一个请求池。目录可以继续加入候选主题，工作协程同时消费 `pending` 队列。一个主题在标题或某个楼层首次命中后立即结束，未命中的主题必须读到实际空页。
+目录发现和主题处理共享同一个请求池。目录可以继续加入候选主题，工作协程同时消费 `pending` 队列。正文首次命中后停止读取后续楼层；使用目录基线的短帖还需经过批量或详情核对再保存。未命中时读取到预期楼层范围或实际空页，并复查元数据。
 
 ## 目录与匹配
 
@@ -183,7 +192,13 @@ sequenceDiagram
 4. 按主题 ID 去重并持续写入 SQLite。
 5. 第二遍重新检查目录，降低扫描期间内容移动造成的遗漏。
 
-主题处理先读取详情，以实际 `boardId` 判断是否仍在搜索范围。标题未命中时，再分页读取主楼和回复。UBB 与 Markdown 会转换为可见文本；媒体地址、附件内容和已删除楼层不参与匹配。
+主题处理通常先读取详情，以实际 `boardId` 判断是否仍在搜索范围。标题未命中时，再分页读取主楼和回复。UBB 与 Markdown 会转换为可见文本；媒体地址、附件内容和已删除楼层不参与匹配。
+
+目录字段齐全且有效、版面在范围内、标题未命中且最多 10 楼的短帖，可以省去首次详情请求。普通目录发现时记录来源版面、偏移和页大小，正文读完后交给 `TopicVerifier` 按来源页分组。一次新目录请求可核对同组多个主题；只有标题、版面、回复数和最后回复时间均与基线一致时，才保存结论。候选消失、字段变化或目录响应异常时，逐帖读取详情，必要时重扫正文。单条分组、置顶和缺少来源的旧记录沿用详情核对。
+
+待核对集合达到 40 条时暂停领取并启动核对，允许已经在读正文的协程收尾。有空位后立即恢复领取，同组的详情回退并发执行，所有实际请求仍受共享请求池限制。即使并发为 1，也能在正文读完后继续领取主题、积累一批。每次核对只处理请求发起前已读完正文的候选，不复用发现阶段的目录响应；期间新完成的正文进入下一批。目录与正文扫描结束后排空剩余批次，主动停止也会等待后台核对退出。
+
+固定数据回归中，同页 20 个稳定短帖使用 20 次正文请求和 1 次目录核对，原有两次目录发现另计。分页、异常回退会增加请求，真实论坛吞吐收益仍待验证。
 
 CC98 目录使用偏移分页，没有稳定快照。即使两遍扫描都结束，也不能证明扫描期间没有主题移动，因此正常结束状态是 `finished_unverified`。
 
@@ -270,6 +285,8 @@ SQLite 使用三个核心表：
 
 `topics` 以任务 ID、轮次和主题 ID 作为联合主键。正文不会完整落盘，只保存主题元数据、处理状态、错误和首次命中的片段。
 
+来源页存入主题 JSON，无需新增表或列。批量核对前的主题保持 `working`，基线和暂存命中留在有界内存集合中。正常停止时未确认项退回 `pending`；进程崩溃则由既有恢复流程处理遗留 `working`，重读正文后再确认。
+
 目录游标记录复查轮次、版面序号和下一偏移。暂停或进程退出后，已经完成的 `matched`、`no_match` 和 `out_of_scope` 不需要重新扫描。
 
 ## 安全边界
@@ -288,4 +305,5 @@ SQLite 使用三个核心表：
 - WebVPN 登录和 CC98 登录相互独立，任一层失效都可能阻断请求。
 - 权限受限、隐藏或历史异常楼层可能返回空内容，只能记录为读取问题。
 - 偏移分页无法提供一致性快照，`finished_unverified` 不能解释为绝对完整。
+- 基线核对无法识别不改变标题、版面、回复数和最后回复时间的旧楼层编辑。
 - 自动化测试使用固定数据，真实权限、吞吐量和分页行为仍需长跑验证。
