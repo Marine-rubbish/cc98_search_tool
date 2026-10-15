@@ -41,6 +41,22 @@ npm run open
 
 Windows 启动入口和浏览器打开逻辑已经实现，但尚未在真实 Windows 环境完成验证。
 
+### 停止搜索服务
+
+macOS 或 Linux：
+
+```bash
+./stop-cc98-search.sh
+```
+
+Windows 可以双击 **`stop-cc98-search.cmd`**，也可以运行：
+
+```powershell
+.\stop-cc98-search.cmd
+```
+
+各平台还可以使用 `npm run stop`。停止服务不会删除任务进度、结果或本地配置；服务未运行时重复执行也不会报错。使用自定义数据目录时，可追加 `--data-dir <目录>`。
+
 ### 加载 Chrome 扩展
 
 首次使用需要手动加载一次：

@@ -6,6 +6,7 @@
   "engines": { "node": ">=24.0.0" },
   "scripts": {
     "open": "node scripts/launch.mjs",
+    "stop": "node scripts/stop.mjs",
     "start": "tsx src/cli.ts start",
     "cli": "tsx src/cli.ts",
     "soak": "tsx src/soak-cli.ts",

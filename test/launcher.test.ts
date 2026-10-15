@@ -2,12 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { browserLaunchCommand, dependencyInstallCommand, launch } from '../scripts/launch.mjs';
+import { stop } from '../scripts/stop.mjs';
 import { Store } from '../src/store.js';
 import { parseOptions } from '../src/types.js';
 import { Fixture } from './fixture.js';
@@ -97,6 +98,62 @@ test('端口被其他程序占用时启动失败，不覆盖数据库或终止�
     await assert.rejects(readFile(resolve(dir, 'tasks.sqlite')), { code: 'ENOENT' });
   } finally {
     await new Promise<void>(done => { occupied.close(() => done()); occupied.closeAllConnections(); });
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('停止器安全停止后台服务，重复停止保持幂等', async () => {
+  const dir = await directory();
+  const reserved = createServer();
+  reserved.listen(0, '127.0.0.1');
+  await once(reserved, 'listening');
+  const port = (reserved.address() as { port: number }).port;
+  await new Promise<void>(done => reserved.close(() => done()));
+  try {
+    const service = await launch({ dataDir: dir, port, openBrowser: false });
+    assert.equal(service.started, true);
+    const result = await stop({ dataDir: dir });
+    assert.deepEqual(result, { stopped: true, alreadyStopped: false, pid: service.pid });
+    assert.throws(() => process.kill(service.pid!, 0), { code: 'ESRCH' });
+    assert.deepEqual(await stop({ dataDir: dir }), { stopped: false, alreadyStopped: true });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('停止器拒绝终止无法确认身份的存活进程', async () => {
+  const dir = await directory();
+  const unrelated = createServer((_req, res) => { res.writeHead(404); res.end(); });
+  const unrelatedProcess = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+  const spawned = once(unrelatedProcess, 'spawn');
+  unrelated.listen(0, '127.0.0.1');
+  await Promise.all([once(unrelated, 'listening'), spawned]);
+  const port = (unrelated.address() as { port: number }).port;
+  try {
+    await writeFile(resolve(dir, 'server.json'), JSON.stringify({
+      origin: `http://127.0.0.1:${port}`,
+      token: 'a'.repeat(64),
+      pid: unrelatedProcess.pid,
+    }));
+    await assert.rejects(stop({ dataDir: dir }), /无法确认/);
+    assert.equal(unrelatedProcess.exitCode, null);
+    assert.equal((await fetch(`http://127.0.0.1:${port}`)).status, 404);
+  } finally {
+    const exited = once(unrelatedProcess, 'exit');
+    unrelatedProcess.kill('SIGTERM');
+    await exited;
+    unrelated.closeAllConnections();
+    await new Promise<void>(done => unrelated.close(() => done()));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('停止器拒绝损坏的服务配置', async () => {
+  const dir = await directory();
+  try {
+    await writeFile(resolve(dir, 'server.json'), '{');
+    await assert.rejects(stop({ dataDir: dir }), /不是有效 JSON/);
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

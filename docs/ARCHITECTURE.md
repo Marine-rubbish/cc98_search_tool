@@ -67,6 +67,8 @@ flowchart LR
 |-- .gitignore                   # 排除本地数据、依赖和内部文档
 |-- start-cc98-search.sh         # macOS 和 Linux 启动入口
 |-- start-cc98-search.cmd        # Windows 启动入口
+|-- stop-cc98-search.sh          # macOS 和 Linux 停止入口
+|-- stop-cc98-search.cmd         # Windows 停止入口
 |
 |-- docs/
 |   |-- ARCHITECTURE.md          # 系统结构、运行流程和设计边界
@@ -74,7 +76,8 @@ flowchart LR
 |   `-- aime.md                  # Aime 与其他本机 Agent 的调用说明
 |
 |-- scripts/
-|   `-- launch.mjs               # 安装依赖、启动或复用服务并打开页面
+|   |-- launch.mjs               # 安装依赖、启动或复用服务并打开页面
+|   `-- stop.mjs                 # 校验服务身份并停止后台进程
 |
 |-- src/
 |   |-- cli.ts                   # JSON CLI 与前台服务入口

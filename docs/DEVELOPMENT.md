@@ -34,6 +34,7 @@ Node.js HTTP 服务 -> Scanner -> RequestPool -> WebSocket Bridge
 | `extension/` | 无需构建的 Chrome MV3 连接器 |
 | `web/` | 无需构建的本地搜索页面 |
 | `scripts/launch.mjs` | 后台启动、复用服务和打开 Chrome |
+| `scripts/stop.mjs` | 校验本地服务身份并停止后台进程 |
 | `test/` | Fixture、扫描器、协议、集成和启动器测试 |
 
 ## 本地开发
@@ -70,9 +71,18 @@ npm run open -- --no-open
 ```text
 start-cc98-search.sh    macOS / Linux
 start-cc98-search.cmd   Windows
+stop-cc98-search.sh     macOS / Linux
+stop-cc98-search.cmd    Windows
 ```
 
-`.sh` 入口查找常见 Node.js 安装位置；`.cmd` 入口使用 Windows `PATH` 中的 `node.exe`。两者最终都调用 `scripts/launch.mjs`，业务行为保持一致。Windows 会通过 `cmd.exe start` 打开默认浏览器，Linux 当前只打印搜索页地址。
+启动用 `.sh` 入口查找常见 Node.js 安装位置；`.cmd` 入口使用 Windows `PATH` 中的 `node.exe`。两个启动入口最终都调用 `scripts/launch.mjs`，业务行为保持一致。Windows 会通过 `cmd.exe start` 打开默认浏览器，Linux 当前只打印搜索页地址。
+
+停止入口调用 `scripts/stop.mjs`。停止器读取数据目录中的 `server.json`，先通过本地鉴权确认服务身份，再发送 `SIGTERM` 并等待退出。它不会按端口或进程名模糊终止进程。也可以运行：
+
+```bash
+npm run stop
+npm run stop -- --data-dir .cc98-other
+```
 
 Windows 入口和浏览器打开分支已有自动化测试，但尚未在真实 Windows 环境验证。
 
