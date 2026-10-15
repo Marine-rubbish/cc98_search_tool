@@ -24,6 +24,10 @@ finished_unverified 只表示已处理已发现的主题，不能声称找齐范
 
 用户关键词应作为独立进程参数传入，不要拼接到未经转义的 shell 命令中。
 
+多词需求可先调用 `suggest "词列表"` 取得查询 JSON，检查组内和组间的 AND/OR 及别名，再保存为文件并执行 `search --query-file query.json --preset employment`。建议完全在本地运行；未知词不会丢弃，词典只扩展等价叫法。用户给出的组合关系优先于词典默认建议。
+
+交集以整帖为范围，词可以分布在标题或不同楼层。任务创建后条件固定，更改条件应新建任务。OR 会提前停止读取，不能据已有结果推算任意新交集。
+
 ## 调用示例
 
 ```bash
@@ -75,6 +79,7 @@ CLI 从 `.cc98/server.json` 读取服务地址和本地连接凭据。调用 HTT
 | --- | --- | --- |
 | GET | `/api/doctor` | 连接与运行状态 |
 | GET | `/api/boards` | 论坛版面目录 |
+| POST | `/api/query/suggest` | 本地词典建议，返回 query、description、unknownTerms |
 | POST | `/api/jobs` | 创建任务 |
 | GET | `/api/jobs` | 任务列表 |
 | GET | `/api/jobs/{id}` | 当前任务与问题项 |
@@ -106,3 +111,5 @@ CLI 从 `.cc98/server.json` 读取服务地址和本地连接凭据。调用 HTT
 ```
 
 版面目录刷新在扫描期间会返回忙碌状态，避免额外请求叠加扫描并发。
+
+组合查询请求以 `query` 替代 `keyword`，完整格式见[开发者文档](DEVELOPMENT.md#http-api)。响应中的 `options.query` 保存固定条件，`options.keyword` 为可读说明。结果增加 `evidence` 数组，包含每个已命中逻辑词、实际匹配别名、片段和链接；索引 `groupIndex`、`termIndex` 从 0 开始。报告时区分各楼层证据，不能把 OR 短路结果描述成全帖所有词的命中清单。原单关键词结果形状保持不变。

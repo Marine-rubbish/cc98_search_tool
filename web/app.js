@@ -1,3 +1,5 @@
+import { QueryEditor } from './query-editor.js';
+
 /* 按元素 ID 获取页面控件。 */
 const $ = id => document.getElementById(id);
 let token, boards = [], selected = new Set([235, 459]), jobId = '', shown = 100, previousConnected = false, pollingError;
@@ -27,6 +29,8 @@ async function api(path, data) {
 
 /* 包装异步事件处理器，统一清空旧错误并显示新错误。 */
 function guarded(fn) { return async event => { try { notice(null); await fn(event); } catch (error) { notice(error); } }; }
+
+const queryEditor = new QueryEditor(api, guarded);
 
 /* 根据筛选词和当前选择集合重绘版面复选框列表。 */
 function drawBoards() {
@@ -98,8 +102,23 @@ async function drawJob() {
     const url = new URL(hit.url);
     if (url.protocol === 'https:') link.href = url.href;
     link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = hit.title; heading.append(link);
-    const snippet = document.createElement('p'); snippet.textContent = hit.snippet;
-    article.append(meta, heading, snippet); $('results').append(article);
+    article.append(meta, heading);
+    if (hit.evidence) {
+      const hint = document.createElement('p'); hint.className = 'muted';
+      hint.textContent = '已确认的命中证据（满足条件后停止读取）'; article.append(hint);
+      for (const evidence of hit.evidence) {
+        const item = document.createElement('div'); item.className = 'evidence';
+        const source = document.createElement('a'), snippet = document.createElement('p');
+        const url = new URL(evidence.url);
+        if (url.protocol === 'https:') source.href = url.href;
+        source.target = '_blank'; source.rel = 'noopener noreferrer';
+        source.textContent = `组 ${evidence.groupIndex + 1} · ${evidence.keyword}${evidence.matchedKeyword !== evidence.keyword ? `（命中 ${evidence.matchedKeyword}）` : ''} · ${evidence.kind === 'title' ? '标题' : `第 ${evidence.floor} 楼`}`;
+        snippet.textContent = evidence.snippet; item.append(source, snippet); article.append(item);
+      }
+    } else {
+      const snippet = document.createElement('p'); snippet.textContent = hit.snippet; article.append(snippet);
+    }
+    $('results').append(article);
   }
   $('noResults').textContent = result.total ? `显示 ${result.results.length} / ${result.total} 条结果` :
     active ? '暂未发现匹配，任务仍在运行。' : '当前没有已确认的命中；请结合覆盖说明和读取问题判断。';
@@ -134,7 +153,7 @@ $('searchForm').addEventListener('submit', guarded(async event => {
   event.preventDefault();
   $('start').disabled = true;
   try {
-    const job = await api('jobs', { keyword: $('keyword').value, boardIds: [...selected],
+    const job = await api('jobs', { ...queryEditor.payload(), boardIds: [...selected],
       concurrency: Number($('concurrency').value), requestsPerSecond: Number($('rate').value), caseSensitive: $('caseSensitive').checked });
     jobId = job.id; shown = 100;
     await refresh();

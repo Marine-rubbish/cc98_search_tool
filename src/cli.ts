@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { suggestQuery } from './dictionary.js';
+import { parseQuery } from './query.js';
 
 const defaults = fileURLToPath(new URL('../.cc98', import.meta.url));
 
@@ -17,6 +19,7 @@ async function main() {
       preset: { type: 'string' }, concurrency: { type: 'string' }, rate: { type: 'string' },
       from: { type: 'string' }, limit: { type: 'string' }, topics: { type: 'string' },
       'case-sensitive': { type: 'boolean' },
+      'query-file': { type: 'string' },
       help: { type: 'boolean' },
     },
   });
@@ -38,9 +41,17 @@ async function main() {
   if (!command || values.help) {
     output({ commands: ['start [--port 9876]', 'doctor', 'boards', 'search "关键词" --preset employment [--concurrency 20]',
       'search "关键词" --boards 235,459 [--rate 10] [--case-sensitive]', 'search "关键词" --preset all',
+      'suggest "字节 杭州 Linux C++" [--case-sensitive]', 'search --query-file query.json --preset employment',
       'status [任务ID]', 'results 任务ID [--from 0 --limit 100]', 'export 任务ID',
       'pause 任务ID', 'cancel 任务ID', 'resume 任务ID [--topics 5557650]', 'history 任务ID'], dataDir });
     return;
+  }
+  /* 建议可离线生成；标准输出就是可编辑并传给 --query-file 的查询 JSON。 */
+  if (command === 'suggest') return output(suggestQuery({ text: argument, caseSensitive: values['case-sensitive'] ?? false }).query);
+  let query;
+  if (values['query-file']) {
+    if (command !== 'search' || argument) throw new Error('--query-file 仅用于 search，且不能同时提供关键词');
+    query = parseQuery(JSON.parse(await readFile(resolve(values['query-file']), 'utf8')), values['case-sensitive'] ?? false);
   }
   let settings: { origin: string; token: string };
   try { settings = JSON.parse(await readFile(resolve(dataDir, 'server.json'), 'utf8')); }
@@ -72,7 +83,7 @@ async function main() {
     else if (values.preset === 'all') boardIds = (await request('boards')).filter((b: { canEntry?: boolean }) => b.canEntry !== false).map((b: { id: number }) => b.id);
     else if (!values.preset || values.preset === 'employment') boardIds = [235, 459];
     else throw new Error('版面预设仅支持 employment 或 all');
-    return output(await request('jobs', { keyword: argument, boardIds, concurrency: Number(values.concurrency ?? 20),
+    return output(await request('jobs', { ...(query ? { query } : { keyword: argument }), boardIds, concurrency: Number(values.concurrency ?? 20),
       requestsPerSecond: Number(values.rate ?? 10), caseSensitive: values['case-sensitive'] ?? false }));
   }
   if (['results', 'export', 'cancel', 'pause', 'resume', 'history'].includes(command)) {

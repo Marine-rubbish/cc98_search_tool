@@ -14,7 +14,22 @@
   <div class="workspace">
     <aside class="panel">
       <form id="searchForm">
-        <label for="keyword" class="label">想找什么？</label><input id="keyword" class="keyword" placeholder="例如：面试、转正、租房" maxlength="200" required>
+        <label for="queryMode" class="label">想找什么？</label>
+        <select id="queryMode" aria-label="搜索方式"><option value="keyword">单关键词</option><option value="query">分面组合 · 多关键词</option></select>
+        <div id="keywordPanel"><label for="keyword" class="muted">关键词（按完整文字匹配）</label><input id="keyword" class="keyword" placeholder="例如：面试" maxlength="200" required></div>
+        <fieldset id="queryPanel" hidden disabled>
+          <label for="queryText" class="muted">词列表</label>
+          <textarea id="queryText" rows="3" maxlength="4000" placeholder="字节 杭州 Linux C++&#10;多个词可用逗号或换行分隔"></textarea>
+          <button type="button" id="suggestQuery" class="secondary">生成分组</button>
+          <p id="suggestionHint" class="muted">词典建议：同类词取并集，不同分面取交集。也可以手动添加条件组。</p>
+          <label for="groupOperator" class="muted">组间关系</label>
+          <select id="groupOperator"><option value="and">所有组都满足 AND（交集）</option><option value="or">任一组满足 OR（并集）</option></select>
+          <div id="queryGroups"></div>
+          <button type="button" id="addGroup" class="secondary">＋ 添加条件组</button>
+          <p class="muted">实际搜索条件</p><output id="queryPreview" aria-live="polite"></output>
+          <p id="queryStale" class="query-warning" hidden>词列表已修改，请重新生成分组后再搜索。</p>
+          <p class="muted">交集按整帖判断，词可出现在不同楼层。每次最多 20 个词。修改条件需新建任务。</p>
+        </fieldset>
         <div class="label section-label">扫描范围 <button type="button" id="refreshBoards" class="text-button">刷新版面</button></div>
         <div class="presets"><button type="button" id="employment" class="chip">就业</button><button type="button" id="allBoards" class="chip">全部可选版面</button><button type="button" id="clearBoards" class="chip">清空</button></div>
         <input id="boardFilter" placeholder="筛选版面名称或编号" aria-label="筛选版面">
@@ -23,7 +38,7 @@
         <div class="settings"><label for="concurrency">并发数<input id="concurrency" type="number" value="20" min="1" max="20" required></label><label for="rate">每秒请求数<input id="rate" type="number" value="10" min="1" max="50" required></label></div>
         <label class="check"><input id="caseSensitive" type="checkbox">区分英文大小写</label>
         <button id="start" class="primary" type="submit" disabled>开始搜索 <span>↗</span></button>
-        <p class="muted small">扫描所选版面的全部历史主题。已命中的主题会停止继续读取。</p>
+        <p class="muted small">扫描所选版面的全部历史主题。满足完整条件后停止继续读取该帖。</p>
       </form>
     </aside>
     <section class="results-panel">

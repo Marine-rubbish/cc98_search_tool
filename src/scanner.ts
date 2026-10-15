@@ -1,10 +1,10 @@
 import { Store } from './store.js';
 import { Site } from './site.js';
 import { RequestPool, wait } from './pool.js';
-import { matchText } from './matcher.js';
+import { compileQuery, type CompiledQuery } from './matcher.js';
 import { sameTopic, TopicVerifier } from './topic-verifier.js';
 import { errorInfo, ScanError } from './types.js';
-import type { Board, Job, Match, SearchOptions, Topic, Transport } from './types.js';
+import type { Board, Job, Match, MatchEvidence, SearchOptions, Topic, Transport } from './types.js';
 
 /*
  * 组织一次完整搜索：读取版面目录、发现主题、并发扫描楼层并持久化结果。
@@ -180,6 +180,7 @@ export class Scanner {
   /* 并行运行目录发现和主题工作协程，最后根据问题项决定任务结束状态。 */
   private async run(job: Job, abort: AbortController, topicIds?: readonly number[]) {
     const signal = abort.signal;
+    const query = compileQuery(job.options);
     const pool = new RequestPool(this.transport, job.options.concurrency, job.options.requestsPerSecond, signal);
     const site = new Site(async r => {
       while (true) {
@@ -233,7 +234,7 @@ export class Scanner {
         persist();
       },
       async (topic, match) => {
-        await this.verifyTopic(job, topic, site, signal, true, match);
+        await this.verifyTopic(job, topic, site, signal, query, true, match);
         persist();
       },
       topicFailed);
@@ -341,7 +342,7 @@ export class Scanner {
             continue;
           }
           activeBodies++;
-          try { await this.scanTopic(job, candidate, site, signal, verifier); }
+          try { await this.scanTopic(job, candidate, site, signal, query, verifier); }
           catch (error) { topicFailed(candidate, error); }
           finally { activeBodies--; }
           persist();
@@ -365,18 +366,20 @@ export class Scanner {
   }
 
   /* 字段齐全的短帖复用目录基线，省去首次详情；其他主题仍先读取最新详情。 */
-  private async scanTopic(job: Job, candidate: Topic, site: Site, signal: AbortSignal, verifier: TopicVerifier) {
+  private async scanTopic(job: Job, candidate: Topic, site: Site, signal: AbortSignal, query: CompiledQuery, verifier: TopicVerifier) {
+    const title = query.createState();
+    title.feed(candidate.title, 'plain');
     const fromDirectory = Number.isSafeInteger(candidate.replyCount) && candidate.replyCount >= 0 &&
       candidate.replyCount < 10 && job.boards.some(board => board.id === candidate.boardId) &&
       Number.isFinite(Date.parse(candidate.lastPostTime ?? '')) &&
-      matchText(candidate.title, job.options.keyword, job.options.caseSensitive, 'plain') === undefined;
+      !title.satisfied();
     const topic = fromDirectory ? candidate : await site.topic(candidate.id);
-    await this.scanTopicWithMetadata(job, topic, site, signal, fromDirectory, verifier);
+    await this.scanTopicWithMetadata(job, topic, site, signal, query, fromDirectory, verifier);
   }
 
   /* 使用已有元数据扫描主题；目录基线下的结论必须先经过批量或详情核对。 */
   private async scanTopicWithMetadata(
-    job: Job, topic: Topic, site: Site, signal: AbortSignal, fromDirectory = false, verifier?: TopicVerifier,
+    job: Job, topic: Topic, site: Site, signal: AbortSignal, query: CompiledQuery, fromDirectory = false, verifier?: TopicVerifier,
   ): Promise<void> {
     signal.throwIfAborted();
     const board = job.boards.find(b => b.id === topic.boardId);
@@ -390,9 +393,20 @@ export class Scanner {
       url: new URL(`topic/${topic.id}/${floor ? Math.ceil(floor / 10) : 1}${floor ? `#${floor % 10}` : ''}`, job.session.forumBase).href,
     });
 
-    /* 标题先匹配，命中后无需请求任何楼层。 */
-    const title = matchText(topic.title, job.options.keyword, job.options.caseSensitive, 'plain');
-    if (title !== undefined) { this.store.finishTopic(job, topic, 'matched', makeMatch(title)); return; }
+    const state = query.createState(), evidence: MatchEvidence[] = [];
+    let firstMatch: Match | undefined;
+    /* 每个主题独立累计证据，只有整个表达式成立才交给核对与持久化。 */
+    const matchSegment = (source: string, format: 'plain' | 'ubb' | 'markdown', floor?: number, postId?: number): Match | undefined => {
+      for (const hit of state.feed(source, format)) {
+        const match = makeMatch(hit.snippet, floor, postId);
+        firstMatch ??= match;
+        if (job.options.query) evidence.push({ ...hit, kind: match.kind, floor, postId, url: match.url });
+      }
+      if (state.satisfied() && firstMatch) return { ...firstMatch, ...(job.options.query ? { evidence } : {}) };
+    };
+    /* 最新标题已满足整个条件时无需读取正文，部分满足的交集继续读取楼层。 */
+    const title = matchSegment(topic.title, 'plain');
+    if (title) { this.store.finishTopic(job, topic, 'matched', title); return; }
     const seen = new Map<number, number>();
     let lastFloor = 0;
     let pendingMatch: Match | undefined;
@@ -423,10 +437,10 @@ export class Scanner {
         if (post.contentType !== undefined && post.contentType !== 0 && post.contentType !== 1)
           throw new ScanError('FORMAT', '该楼层的文本格式尚不支持');
         /* contentType=1 为 Markdown；缺失或 0 按 CC98 的 UBB 正文处理。 */
-        const snippet = matchText(post.content, job.options.keyword, job.options.caseSensitive, post.contentType === 1 ? 'markdown' : 'ubb');
-        if (snippet !== undefined) {
-          const match = makeMatch(snippet, post.floor, post.id);
-          if (fromDirectory) {
+        const match = matchSegment(post.content, post.contentType === 1 ? 'markdown' : 'ubb', post.floor, post.id);
+        if (match) {
+          /* 多条件可能依赖旧标题或先前楼层；提交前核对基线，避免混合变化前后的证据。 */
+          if (fromDirectory || job.options.query) {
             pendingMatch = match;
             break pages;
           }
@@ -440,18 +454,18 @@ export class Scanner {
 
     signal.throwIfAborted();
     if (fromDirectory && verifier?.add(topic, pendingMatch)) return;
-    await this.verifyTopic(job, topic, site, signal, fromDirectory, pendingMatch);
+    await this.verifyTopic(job, topic, site, signal, query, fromDirectory, pendingMatch);
   }
 
   /* 单条、来源不明或目录异常时逐帖核对；有变化只回退重扫一次。 */
   private async verifyTopic(
-    job: Job, topic: Topic, site: Site, signal: AbortSignal, fromDirectory: boolean, pendingMatch?: Match,
+    job: Job, topic: Topic, site: Site, signal: AbortSignal, query: CompiledQuery, fromDirectory: boolean, pendingMatch?: Match,
   ) {
     const after = await site.topic(topic.id);
     signal.throwIfAborted();
     if (!sameTopic(topic, after)) {
       /* 目录可能已经过期，复用最新详情重扫一次；回退不再走目录优化路径。 */
-      if (fromDirectory) return this.scanTopicWithMetadata(job, after, site, signal);
+      if (fromDirectory) return this.scanTopicWithMetadata(job, after, site, signal, query);
       throw new ScanError('CHANGED', '主题在读取期间发生变化，需要恢复复查');
     }
     this.store.finishTopic(job, after, pendingMatch ? 'matched' : 'no_match', pendingMatch);

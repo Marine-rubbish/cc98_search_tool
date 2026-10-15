@@ -7,6 +7,7 @@ import { Bridge, sameSecret } from './bridge.js';
 import { Store } from './store.js';
 import { Scanner } from './scanner.js';
 import { parseOptions, errorInfo, ScanError } from './types.js';
+import { suggestQuery } from './dictionary.js';
 import type { Transport } from './types.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -110,6 +111,8 @@ export async function startServer(options: { port?: number; dataDir?: string; tr
           });
         }
         if (req.method === 'GET' && path === '/api/boards') return json(res, await scanner.boards());
+        /* 分组建议只查本地词典，不要求扩展连接，也不读取论坛。 */
+        if (req.method === 'POST' && path === '/api/query/suggest') return json(res, suggestQuery(await body(req)));
         if (req.method === 'GET' && path === '/api/jobs') return json(res, store.list().map(job => summary(job.id)));
         if (req.method === 'POST' && path === '/api/jobs') return json(res, await scanner.start(parseOptions(await body(req))), 201);
 
@@ -138,6 +141,7 @@ export async function startServer(options: { port?: number; dataDir?: string; tr
       /* 静态文件使用固定白名单，不接受用户输入拼接文件路径。 */
       const files: Record<string, [string, string]> = {
         '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'],
+        '/query-editor.js': ['query-editor.js', 'text/javascript'],
       };
       const file = files[path];
       if (req.method !== 'GET' || !file) return json(res, { error: '页面不存在' }, 404);

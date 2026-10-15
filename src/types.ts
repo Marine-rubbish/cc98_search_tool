@@ -1,3 +1,5 @@
+import { formatQuery, parseQuery } from './query.js';
+
 /* 本地服务与扩展之间只传递这些论坛资源描述，由扩展转换为固定的只读路径。 */
 export type Resource =
   | { kind: 'boards' }
@@ -54,9 +56,21 @@ export type JobStatus =
   | 'cancelled'
   | 'finished_unverified'
   | 'partial';
-/* 并发数限制同时占用的请求槽位，请求频率限制每秒启动的请求数。 */
-export interface SearchOptions { keyword: string; boardIds: number[]; concurrency: number; requestsPerSecond: number; caseSensitive: boolean }
-/* 每个主题仅保存首次命中及上下文片段；标题命中没有 floor 和 postId。 */
+/* 同一逻辑词的所有别名按 OR 匹配；分面仅供分组编辑，不限制词出现的位置。 */
+export interface QueryTerm { keyword: string; aliases?: string[] }
+/* 两层布尔条件以整帖为范围，允许不同条件在标题或不同楼层满足。 */
+export interface SearchQuery {
+  operator: 'and' | 'or';
+  groups: { facet: 'company' | 'location' | 'skill' | 'other'; operator: 'and' | 'or'; terms: QueryTerm[] }[];
+}
+/* 并发数限制同时占用的请求槽位；query 存条件快照，keyword 保留为任务的可读说明。 */
+export interface SearchOptions { keyword: string; query?: SearchQuery; boardIds: number[]; concurrency: number; requestsPerSecond: number; caseSensitive: boolean }
+/* 逻辑词首次命中的证据；索引指向任务中保存的组和词，避免同名条件混淆。 */
+export interface MatchEvidence {
+  groupIndex: number; termIndex: number; keyword: string; matchedKeyword: string;
+  kind: 'title' | 'post'; floor?: number; postId?: number; snippet: string; url: string;
+}
+/* 兼容旧的首次命中字段；新查询补充各词证据，短路后未读内容不宣称已匹配。 */
 export interface Match {
   topicId: number;
   boardId: number;
@@ -67,6 +81,7 @@ export interface Match {
   postId?: number;
   snippet: string;
   url: string;
+  evidence?: MatchEvidence[];
 }
 /* 目录、置顶等资源的读取问题；单个主题的失败另存于 topics 表。 */
 export interface Issue { resource: string; code: string; message: string }
@@ -114,14 +129,16 @@ export function errorInfo(error: unknown): { code: string; message: string; paus
 
 /* 校验外部搜索参数，补上默认值并去重版面 ID；不合法时抛出 INPUT。 */
 export function parseOptions(input: unknown): SearchOptions {
-  if (!input || typeof input !== 'object') throw new ScanError('INPUT', '请输入搜索参数');
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ScanError('INPUT', '请输入搜索参数');
   const v = input as Record<string, unknown>;
-  const keyword = typeof v.keyword === 'string' ? v.keyword.trim() : '';
+  if (v.query !== undefined && v.keyword !== undefined) throw new ScanError('INPUT', 'keyword 与 query 只能提供一个');
+  const query = v.query === undefined ? undefined : parseQuery(v.query, v.caseSensitive === true);
+  const keyword = query ? formatQuery(query) : typeof v.keyword === 'string' ? v.keyword.trim() : '';
   const boardIds = v.boardIds;
   const concurrency = v.concurrency ?? 20;
   const requestsPerSecond = v.requestsPerSecond ?? 10;
   /* 参数进入扫描器前统一限制范围，避免页面和 CLI 使用不同的边界。 */
-  if (!keyword || keyword.length > 200) throw new ScanError('INPUT', '关键词长度应为 1–200');
+  if (!query && (!keyword || keyword.length > 200)) throw new ScanError('INPUT', '关键词长度应为 1–200');
   if (!Array.isArray(boardIds) || !boardIds.length || boardIds.length > 1000 ||
       boardIds.some(id => !Number.isSafeInteger(id) || id <= 0)) throw new ScanError('INPUT', '请选择有效版面');
   if (typeof concurrency !== 'number' || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 20)
@@ -129,5 +146,5 @@ export function parseOptions(input: unknown): SearchOptions {
   if (typeof requestsPerSecond !== 'number' || !Number.isFinite(requestsPerSecond) || requestsPerSecond < 1 || requestsPerSecond > 50)
     throw new ScanError('INPUT', '每秒请求数应为 1–50');
   if (v.caseSensitive !== undefined && typeof v.caseSensitive !== 'boolean') throw new ScanError('INPUT', '大小写选项必须是布尔值');
-  return { keyword, boardIds: [...new Set(boardIds)], concurrency, requestsPerSecond, caseSensitive: v.caseSensitive === true };
+  return { keyword, ...(query ? { query } : {}), boardIds: [...new Set(boardIds)], concurrency, requestsPerSecond, caseSensitive: v.caseSensitive === true };
 }

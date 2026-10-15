@@ -26,6 +26,7 @@ Node.js HTTP 服务 -> Scanner -> RequestPool -> WebSocket Bridge
 | `src/site.ts` | CC98 资源读取与响应解析 |
 | `src/pool.ts` | 全局并发、请求频率、重试和退避 |
 | `src/matcher.ts` | UBB、Markdown 和可见文本匹配 |
+| `src/query.ts`、`src/dictionary.ts` | 分组条件校验、可读表达式和本地领域词典建议 |
 | `src/store.ts` | SQLite 任务、轮次、游标、主题状态和结果 |
 | `src/bridge.ts` | 本地服务与扩展之间的 WebSocket 协议 |
 | `src/server.ts` | 本机 HTTP API、静态页面和访问控制 |
@@ -108,6 +109,8 @@ npm run --silent cli -- search "字节" --preset employment --concurrency 20
 npm run --silent cli -- search "实习" --boards 235,459 --rate 10
 npm run --silent cli -- search "租房" --preset all
 npm run --silent cli -- search "Go" --boards 235 --case-sensitive
+npm run --silent cli -- suggest "字节 杭州 Linux C++" > query.json
+npm run --silent cli -- search --query-file query.json --preset employment
 
 npm run --silent cli -- status JOB_ID
 npm run --silent cli -- results JOB_ID --from 0 --limit 100
@@ -122,6 +125,8 @@ npm run --silent cli -- history JOB_ID
 `results` 每页最多返回 `1000` 条。`export` 包含全部命中、任务范围、覆盖说明和问题项。一次只允许一个任务运行。
 
 `resume` 会创建新轮次，保留已有结论并重试未完成项；`--topics` 只重试指定主题。连接或登录短时中断后的自动恢复不会创建新轮次。
+
+`suggest` 可离线执行，输出纯查询 JSON。编辑其中的 `operator`、词和别名后，用 `--query-file` 搜索。文件内容为下面请求示例中的 `query` 对象。`--query-file` 与位置参数关键词不能同时使用；单关键词 CLI 和 soak 参数保持原义。
 
 ## 真实长跑
 
@@ -151,6 +156,7 @@ CLI 从 `<data-dir>/server.json` 读取本机地址和鉴权凭据。不要把�
 | --- | --- | --- |
 | `GET` | `/api/doctor` | 服务、扩展和扫描器状态 |
 | `GET` | `/api/boards` | 当前账号可见的版面目录 |
+| `POST` | `/api/query/suggest` | 本地词典建议，无需连接论坛 |
 | `POST` | `/api/jobs` | 创建搜索任务 |
 | `GET` | `/api/jobs` | 查询任务列表 |
 | `GET` | `/api/jobs/{id}` | 查询任务、计数和问题项 |
@@ -173,11 +179,42 @@ CLI 从 `<data-dir>/server.json` 读取本机地址和鉴权凭据。不要把�
 }
 ```
 
+多条件请求用 `query` 替代 `keyword`，其他参数相同：
+
+```json
+{
+  "query": {
+    "operator": "and",
+    "groups": [
+      {"facet": "company", "operator": "or", "terms": [
+        {"keyword": "字节跳动", "aliases": ["字节", "ByteDance"]}
+      ]},
+      {"facet": "location", "operator": "or", "terms": [{"keyword": "杭州", "aliases": ["Hangzhou"]}]},
+      {"facet": "skill", "operator": "and", "terms": [{"keyword": "Linux"}, {"keyword": "C++"}]}
+    ]
+  },
+  "boardIds": [235, 459],
+  "concurrency": 20,
+  "requestsPerSecond": 10,
+  "caseSensitive": false
+}
+```
+
+`facet` 可选 `company`、`location`、`skill`、`other`，用于编辑和展示，不限制词出现的位置。两层 `operator` 都接受 `and` 或 `or`；同一词的别名固定按 OR 匹配。
+
+拒绝空组、空词和无效关系。最多 20 个逻辑词，每词最多 5 个别名，每个字符串最长 200 字符，总长度不超过 4000。输入按 NFC 规范化，结合大小写选项去重。词内部空格、C++ 等标点保留。
+
+建议接口接收 `{"text":"字节 杭州 Linux C++","caseSensitive":false}`，返回 `query`、可读 `description` 和 `unknownTerms`。仍需本机 Bearer 鉴权，无论坛请求。提交 `query` 后不会隐式查词典补别名；任务保存完整条件快照，后续词典修改不影响恢复。
+
+新任务的 `options.keyword` 是完整可读表达式，`options.query` 是结构化快照。新结果在原 `Match` 字段之外增加 `evidence` 数组：每项含从 0 开始的 `groupIndex`、`termIndex`、`keyword`、实际命中的 `matchedKeyword`、`kind`、`snippet`、`url`；正文证据另有 `floor` 和 `postId`。旧任务和单关键词结果不增加这些字段。
+
 ## 扫描与完整性
 
 扫描器按版面读取普通主题并合并置顶主题，以主题 ID 去重。目录读取采用重叠分页和两遍复查；遇到非空短页时，会探测下一偏移并确认实际尾部。论坛报告的主题数只作为目录上界。
 
-普通主题先读取最新详情，确认实际所属版面并检查标题，再分页读取主楼和回复。正文首次命中后结束该主题；未命中时读取到预期楼层范围或实际空页，再核对一次详情。重复帖子 ID、楼层倒序和读取失败会保留为错误。
+普通主题先读取最新详情，确认实际所属版面并检查标题，再分页读取主楼和回复。满足完整条件后结束该主题；未满足时读取到预期楼层范围或实际空页，再核对一次详情。重复帖子 ID、楼层倒序和读取失败会保留为错误。
+
+每轮只编译一次查询，每个主题单独累计各词证据。每段正文只提取一次可见文本，匹配所有尚未命中的词；AND 可以跨标题和楼层成立。多条件正文命中还需核对元数据，变化回退时清空全部证据。标题满足完整条件时无需读正文。旧单关键词保持既有请求路径。
 
 目录中版面 ID、标题、回复数和最后回复时间齐全且有效，回复数为 0–9、版面在搜索范围内、标题未命中时，扫描器复用目录信息作为基线，省去首次详情请求。标题已命中时仍先读详情，保持一次请求。
 
@@ -227,7 +264,7 @@ CLI 从 `<data-dir>/server.json` 读取本机地址和鉴权凭据。不要把�
 | `server.json` | 本地服务地址、进程信息和本机鉴权凭据 |
 | `server.log` | 后台服务日志 |
 
-数据库不保存全量帖子正文，只保存任务所需状态和首次命中的片段。整个 `.cc98/` 已加入 `.gitignore`。
+数据库不保存全量帖子正文，只保存任务状态和命中片段；多条件查询保存各词的首次证据。条件和证据存入已有 JSON 字段，无需改表。整个 `.cc98/` 已加入 `.gitignore`。
 
 ## 验证
 
@@ -235,6 +272,7 @@ CLI 从 `<data-dir>/server.json` 读取本机地址和鉴权凭据。不要把�
 npm run typecheck
 npm test
 node --check web/app.js
+node --check web/query-editor.js
 node --check extension/background.js
 node --check extension/local.js
 node --check extension/popup.js
@@ -244,6 +282,8 @@ node --check extension/protocol.js
 自动化测试使用固定论坛数据，不需要真实账号。测试覆盖扫描一致性、短帖请求数与变化回退、批量核对时序和容量、后排楼层命中、目录短页、并发与限频、认证续期、断线续跑、账号切换、服务重启、HTTP 访问控制、CLI 和启动器。批量回归还会挂起一条详情，验证其他回退保持并发，缓冲释放后正文能继续，暂停则等待全部后台读取退出。
 
 自动化测试不能证明真实论坛目录完整，也不能替代 WebVPN、权限和线上吞吐量验证。
+
+多条件回归覆盖真值表、别名、跨楼层证据、与逐词集合运算对照、版本变化清空证据、暂停与恢复、HTTP/CLI 和持久化。延迟测试以每请求 150ms、并发 4 扫描 20 个稳定短帖：三词合并为 21 次请求，逐词扫描共 63 次，同时比较实际耗时。测试不访问真实论坛。
 
 ## 相关文档
 
